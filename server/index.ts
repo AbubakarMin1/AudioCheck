@@ -14,7 +14,7 @@ const __dirname = dirname(__filename);
 
 // Load environment variables from .env file
 // Reason: We need to securely access the OpenAI API key without hardcoding it.
-dotenv.config();
+dotenv.config({ path: path.join(__dirname, '.env') });
 
 // Create an instance of Express
 // Reason: This is the main app object for our backend server.
@@ -30,7 +30,14 @@ app.use(express.json());
 
 // Configure multer for audio file uploads
 // Reason: We need to handle audio file uploads from the frontend.
-const upload = multer({ dest: 'uploads/' });
+const upload = multer({ dest: path.join(__dirname, 'uploads/') });
+
+// Ensure uploads directory exists
+// Reason: Multer needs a directory to store uploaded files.
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
 
 // Initialize OpenAI client
 // Reason: We need to interact with the OpenAI API for the GPT-4o audio agent.
@@ -47,20 +54,8 @@ wss.on('connection', (ws) => {
 
   ws.on('message', async (message) => {
     try {
-      // Assume the message is an audio chunk (Buffer)
-      const audioChunk = message as Buffer;
-
-      // Call the OpenAI API with the audio chunk
-      const response = await openai.audio.speech.create({
-        model: 'gpt-4o-audio-preview',
-        input: audioChunk.toString('base64'),
-        voice: 'alloy',
-        response_format: 'mp3',
-      });
-
-      // Convert response to Buffer and send it back to the client
-      const buffer = Buffer.from(await response.arrayBuffer());
-      ws.send(buffer);
+      // For now, just echo back a simple response
+      ws.send(JSON.stringify({ message: 'Audio received and processed' }));
     } catch (error) {
       console.error('Error processing audio:', error);
       ws.send(JSON.stringify({ error: 'Error processing audio.' }));
@@ -69,6 +64,15 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     console.log('Client disconnected');
+  });
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    openai_configured: !!process.env.OPENAI_API_KEY
   });
 });
 
@@ -84,19 +88,41 @@ app.post('/api/voice', upload.single('audio'), async (req, res) => {
     // Read the uploaded audio file
     const audioFile = fs.readFileSync(req.file.path);
 
-    // Call the OpenAI API with the audio file
-    const response = await openai.audio.speech.create({
-      model: 'gpt-4o-audio-preview',
-      input: audioFile.toString('base64'),
+    // Call the OpenAI transcription API first
+    const transcription = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(req.file.path),
+      model: 'whisper-1',
+    });
+
+    // Generate a response using GPT
+    const chatResponse = await openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'user',
+          content: transcription.text,
+        },
+      ],
+    });
+
+    // Generate speech from the response
+    const speechResponse = await openai.audio.speech.create({
+      model: 'tts-1',
       voice: 'alloy',
-      response_format: 'mp3',
+      input: chatResponse.choices[0].message.content || 'Sorry, I could not process that.',
     });
 
     // Clean up the uploaded file
     fs.unlinkSync(req.file.path);
 
-    // Return the response from the OpenAI API
-    res.json(response);
+    // Convert response to buffer and send as audio
+    const buffer = Buffer.from(await speechResponse.arrayBuffer());
+    
+    res.set({
+      'Content-Type': 'audio/mpeg',
+      'Content-Length': buffer.length.toString(),
+    });
+    res.send(buffer);
   } catch (error) {
     console.error('Error processing audio:', error);
     res.status(500).json({ error: 'Error processing audio.' });
