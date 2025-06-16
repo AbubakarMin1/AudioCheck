@@ -2,155 +2,159 @@ import { useState, useEffect, useRef } from 'react';
 import './App.css';
 
 interface HealthCheckResponse {
-  status: string;
-  timestamp: string;
-  openai_configured: boolean;
+  status: string
+  timestamp: string
+  openai_configured: boolean
 }
 
 function App() {
-  const [isRecording, setIsRecording] = useState(false);
-  const [response, setResponse] = useState<string>('');
-  const [healthStatus, setHealthStatus] = useState<HealthCheckResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string>('');
-  const [audioFile, setAudioFile] = useState<File | null>(null);
-  const [responseAudio, setResponseAudio] = useState<string>('');
-  
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  const [isRecording, setIsRecording] = useState(false)
+  const [response, setResponse] = useState<string>("")
+  const [healthStatus, setHealthStatus] = useState<HealthCheckResponse | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string>("")
+  const [audioFile, setAudioFile] = useState<File | null>(null)
+  const [responseAudio, setResponseAudio] = useState<string>("")
+  const [wsConnected, setWsConnected] = useState(false)
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
 
   // Check backend health on component mount
   useEffect(() => {
-    checkHealth();
-  }, []);
+    checkHealth()
+  }, [])
 
   const checkHealth = async () => {
     try {
-      setIsLoading(true);
-      const response = await fetch('http://localhost:5000/health');
-      const data = await response.json();
-      setHealthStatus(data);
-      setError('');
+      setIsLoading(true)
+      const response = await fetch("http://localhost:5000/health")
+      const data = await response.json()
+      setHealthStatus(data)
+      setError("")
     } catch (err) {
-      setError('Backend server is not running on port 5000');
-      setHealthStatus(null);
+      setError("Backend server is not running on port 5000")
+      setHealthStatus(null)
     } finally {
-      setIsLoading(false);
+      setIsLoading(false)
     }
-  };
+  }
 
   const initWebSocket = () => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (wsRef.current?.readyState === WebSocket.OPEN) return
 
-    wsRef.current = new WebSocket('ws://localhost:8080');
+    wsRef.current = new WebSocket("ws://localhost:8080")
 
     wsRef.current.onopen = () => {
-      setResponse('WebSocket connected successfully!');
-    };
+      setResponse("WebSocket connected successfully!")
+      setWsConnected(true)
+    }
 
     wsRef.current.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
-        setResponse(JSON.stringify(data, null, 2));
+        const data = JSON.parse(event.data)
+        setResponse(JSON.stringify(data, null, 2))
       } catch {
-        setResponse('Received audio response');
+        setResponse("Received audio response")
         // Handle binary audio data
-        const audio = new Audio(URL.createObjectURL(new Blob([event.data], { type: 'audio/mp3' })));
-        audio.play();
+        const audio = new Audio(URL.createObjectURL(new Blob([event.data], { type: "audio/mp3" })))
+        audio.play()
       }
-    };
+    }
 
     wsRef.current.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      setError('WebSocket connection failed');
-    };
+      console.error("WebSocket error:", error)
+      setError("WebSocket connection failed")
+      setWsConnected(false)
+    }
 
     wsRef.current.onclose = () => {
-      setResponse('WebSocket connection closed');
-    };
-  };
+      setResponse("WebSocket connection closed")
+      setWsConnected(false)
+    }
+  }
 
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mediaRecorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = mediaRecorder
+      audioChunksRef.current = []
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
+          audioChunksRef.current.push(event.data)
         }
-      };
+      }
 
       mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/wav" })
         if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(audioBlob);
+          wsRef.current.send(audioBlob)
         } else {
-          setError('WebSocket not connected. Please test WebSocket first.');
+          setError("WebSocket not connected. Please test WebSocket first.")
         }
-        stream.getTracks().forEach(track => track.stop());
-      };
+        stream.getTracks().forEach((track) => track.stop())
+      }
 
-      mediaRecorder.start();
-      setIsRecording(true);
-      setError('');
+      mediaRecorder.start()
+      setIsRecording(true)
+      setError("")
     } catch (error) {
-      console.error('Error accessing microphone:', error);
-      setError('Could not access microphone. Please check permissions.');
+      console.error("Error accessing microphone:", error)
+      setError("Could not access microphone. Please check permissions.")
     }
-  };
+  }
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
     }
-  };
+  }
 
   const testFileUpload = async () => {
     if (!audioFile) {
-      setError('Please select an audio file first');
-      return;
+      setError("Please select an audio file first")
+      return
     }
 
-    setIsLoading(true);
-    setError('');
-    
-    try {
-      const formData = new FormData();
-      formData.append('audio', audioFile);
+    setIsLoading(true)
+    setError("")
 
-      const response = await fetch('http://localhost:5000/api/voice', {
-        method: 'POST',
+    try {
+      const formData = new FormData()
+      formData.append("audio", audioFile)
+
+      const response = await fetch("http://localhost:5000/api/voice", {
+        method: "POST",
         body: formData,
-      });
+      })
 
       if (response.ok) {
-        const audioBlob = await response.blob();
-        const audioUrl = URL.createObjectURL(audioBlob);
-        setResponseAudio(audioUrl);
-        setResponse('Audio file processed successfully! Check the audio player below.');
+        const audioBlob = await response.blob()
+        const audioUrl = URL.createObjectURL(audioBlob)
+        setResponseAudio(audioUrl)
+        setResponse("Audio file processed successfully! Check the audio player below.")
       } else {
-        const errorData = await response.text();
-        setError(`Upload failed: ${errorData}`);
+        const errorData = await response.text()
+        setError(`Upload failed: ${errorData}`)
       }
     } catch (err) {
-      setError(`Upload error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      setError(`Upload error: ${err instanceof Error ? err.message : "Unknown error"}`)
     } finally {
-      setIsLoading(false);
+      setIsLoading(false)
     }
-  };
+  }
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+    const file = event.target.files?.[0]
     if (file) {
-      setAudioFile(file);
-      setError('');
+      setAudioFile(file)
+      setError("")
     }
-  };
+  }
 
   return (
     <div className="App">
@@ -249,4 +253,4 @@ function App() {
   );
 }
 
-export default App; 
+export default App;
