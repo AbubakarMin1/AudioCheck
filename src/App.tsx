@@ -51,7 +51,7 @@ function App() {
       setWsConnected(true)
     }
 
-    wsRef.current.onmessage = (event) => {
+    wsRef.current.onmessage = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data)
         setResponse(JSON.stringify(data, null, 2))
@@ -63,7 +63,7 @@ function App() {
       }
     }
 
-    wsRef.current.onerror = (error) => {
+    wsRef.current.onerror = (error: Event) => {
       console.error("WebSocket error:", error)
       setError("WebSocket connection failed")
       setWsConnected(false)

@@ -44,7 +44,7 @@ if (!fs.existsSync(uploadsDir)) {
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
-
+ 
 // Create a WebSocket server
 // Reason: We need real-time, bidirectional communication for audio streaming.
 const wss = new WebSocketServer({ port: 8080 });
