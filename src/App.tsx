@@ -16,10 +16,12 @@ function App() {
   const [audioFile, setAudioFile] = useState<File | null>(null)
   const [responseAudio, setResponseAudio] = useState<string>("")
   const [wsConnected, setWsConnected] = useState(false)
+  const [isLiveCall, setIsLiveCall] = useState(false)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
+  const streamRef = useRef<MediaStream | null>(null)
 
   // Check backend health on component mount
   useEffect(() => {
@@ -122,6 +124,7 @@ function App() {
 
     setIsLoading(true)
     setError("")
+    setResponseAudio("") // Clear previous audio
 
     try {
       const formData = new FormData()
@@ -133,10 +136,12 @@ function App() {
       })
 
       if (response.ok) {
+        // Create a blob from the audio response
         const audioBlob = await response.blob()
         const audioUrl = URL.createObjectURL(audioBlob)
         setResponseAudio(audioUrl)
-        setResponse("Audio file processed successfully! Check the audio player below.")
+        setResponse("Audio response received! Use the player below to listen.")
+        setError("")
       } else {
         const errorData = await response.text()
         setError(`Upload failed: ${errorData}`)
@@ -155,6 +160,147 @@ function App() {
       setError("")
     }
   }
+
+  const startLiveCall = async () => {
+    try {
+      // Check if browser supports getUserMedia
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Your browser does not support audio recording');
+      }
+
+      // Request microphone permissions first
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1, // Mono audio for better compatibility
+          sampleRate: 16000 // Match Whisper's preferred sample rate
+        } 
+      }).catch(error => {
+        if (error.name === 'NotAllowedError') {
+          throw new Error('Microphone access was denied. Please allow microphone access in your browser settings.');
+        } else if (error.name === 'NotFoundError') {
+          throw new Error('No microphone found. Please connect a microphone and try again.');
+        } else {
+          throw new Error(`Error accessing microphone: ${error.message}`);
+        }
+      });
+
+      streamRef.current = stream;
+      
+      // Initialize WebSocket connection with reconnection logic
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        const connectWebSocket = () => {
+          return new Promise<void>((resolve, reject) => {
+            const ws = new WebSocket("ws://localhost:8080");
+            
+            ws.onopen = () => {
+              console.log("WebSocket connected");
+              wsRef.current = ws;
+              setWsConnected(true);
+              setResponse("Connected to AI agent. You can start speaking now.");
+              setIsLiveCall(true);
+              resolve();
+            };
+
+            ws.onmessage = async (event: MessageEvent) => {
+              try {
+                // Handle JSON messages
+                if (typeof event.data === 'string') {
+                  const data = JSON.parse(event.data);
+                  if (data.type === 'error') {
+                    setError(data.details || data.error);
+                  } else if (data.type === 'connection') {
+                    console.log('Connection status:', data.status);
+                  }
+                  return;
+                }
+
+                // Handle binary audio data
+                const audioBlob = new Blob([event.data], { type: 'audio/mpeg' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                
+                const audio = new Audio(audioUrl);
+                audio.onended = () => {
+                  URL.revokeObjectURL(audioUrl);
+                };
+                await audio.play();
+              } catch (err) {
+                console.error('Error handling message:', err);
+              }
+            };
+
+            ws.onerror = (error: Event) => {
+              console.error("WebSocket error:", error);
+              reject(new Error("WebSocket connection failed"));
+            };
+
+            ws.onclose = (event) => {
+              console.log("WebSocket closed:", event.code, event.reason);
+              setWsConnected(false);
+              if (isLiveCall) {
+                // Attempt to reconnect if the call is still active
+                setTimeout(() => {
+                  if (isLiveCall) {
+                    console.log("Attempting to reconnect...");
+                    connectWebSocket().catch(console.error);
+                  }
+                }, 1000);
+              }
+            };
+          });
+        };
+
+        await connectWebSocket();
+      }
+
+      // Create MediaRecorder with WebM format
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm',
+        audioBitsPerSecond: 16000 // Match Whisper's preferred bitrate
+      });
+      
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+          // Send the WebM audio data directly
+          wsRef.current.send(event.data);
+        }
+      };
+
+      // Start recording with smaller chunks for more real-time interaction
+      mediaRecorder.start(500); // Collect data every 500ms for faster response
+      setIsLiveCall(true);
+      setError("");
+    } catch (error) {
+      console.error("Error starting live call:", error);
+      setError(error instanceof Error ? error.message : "Could not start live call. Please check permissions.");
+      // Clean up any partial setup
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+      setIsLiveCall(false);
+    }
+  };
+
+  const endLiveCall = () => {
+    if (mediaRecorderRef.current && isLiveCall) {
+      mediaRecorderRef.current.stop();
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+    setIsLiveCall(false);
+  };
 
   return (
     <div className="App">
@@ -178,6 +324,25 @@ function App() {
           <button className="test-button" onClick={checkHealth} disabled={isLoading}>
             Refresh Health Check
           </button>
+        </div>
+
+        {/* Live Call Section */}
+        <div className="api-testing">
+          <h3>🤖 Live AI Agent Call</h3>
+          <p>Talk with our computer parts expert</p>
+          <button 
+            className={`call-button ${isLiveCall ? 'active' : ''}`}
+            onClick={isLiveCall ? endLiveCall : startLiveCall}
+            disabled={isLoading}
+          >
+            {isLiveCall ? '📞 End Call' : '📞 Start Live Call'}
+          </button>
+          {isLiveCall && (
+            <div className="call-status">
+              <div className={`status-indicator ${wsConnected ? 'connected' : 'disconnected'}`}></div>
+              <span>{wsConnected ? 'Connected' : 'Connecting...'}</span>
+            </div>
+          )}
         </div>
 
         {/* File Upload Test */}
@@ -204,30 +369,17 @@ function App() {
           </button>
           
           {responseAudio && (
-            <audio controls className="audio-player" src={responseAudio}>
-              Your browser does not support the audio element.
-            </audio>
+            <div className="audio-player-container">
+              <audio 
+                controls 
+                className="audio-player" 
+                src={responseAudio}
+                style={{ width: '100%', marginTop: '1rem' }}
+              >
+                Your browser does not support the audio element.
+              </audio>
+            </div>
           )}
-        </div>
-
-        {/* WebSocket Test */}
-        <div className="api-testing">
-          <h3>WebSocket Real-time Test</h3>
-          <button className="test-button" onClick={initWebSocket}>
-            Connect WebSocket
-          </button>
-        </div>
-
-        {/* Live Recording Section */}
-        <div className="recording-section">
-          <h3>🔴 Live Recording Test</h3>
-          <p>Record audio and send via WebSocket</p>
-          <button 
-            className={`record-button ${isRecording ? 'recording' : ''}`}
-            onClick={isRecording ? stopRecording : startRecording}
-          >
-            {isRecording ? '⏹️ Stop Recording' : '🎙️ Start Recording'}
-          </button>
         </div>
       </div>
 
